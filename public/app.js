@@ -219,13 +219,29 @@ function enrichPub(pub) {
   const now = new Date();
   const today = formatDate(now);
 
-  const aToday = shiftWindow(pub.baseDate, pub.spotAStart, pub.spotAEnd, today);
+  const aToday = shiftWindow(
+    pub.lat,
+    pub.lng,
+    pub.baseDate,
+    pub.spotAStart,
+    pub.spotAEnd,
+    today
+  );
+
   const bToday =
     pub.spotB && pub.spotBStart && pub.spotBEnd
-      ? shiftWindow(pub.baseDate, pub.spotBStart, pub.spotBEnd, today)
+      ? shiftWindow(
+          pub.lat,
+          pub.lng,
+          pub.baseDate,
+          pub.spotBStart,
+          pub.spotBEnd,
+          today
+        )
       : null;
 
   const best = chooseBestWindow(aToday, bToday, now);
+
   const distanceKm = state.userLocation
     ? haversineKm(state.userLocation.lat, state.userLocation.lng, pub.lat, pub.lng)
     : null;
@@ -243,30 +259,109 @@ function reEnrichAll() {
   state.pubs = state.pubs.map(enrichPub);
 }
 
-function shiftWindow(baseDateStr, startHHMM, endHHMM, targetDateStr) {
+function shiftWindow(lat, lng, baseDateStr, startHHMM, endHHMM, targetDateStr) {
   const baseDate = parseISODate(baseDateStr);
   const targetDate = parseISODate(targetDateStr);
-  const daysDiff = Math.round((targetDate - baseDate) / 86400000);
 
-  const [sh, sm] = startHHMM.split(':').map(Number);
-  const [eh, em] = endHHMM.split(':').map(Number);
+  const baseSolar = getSolarTimesLocal(lat, lng, baseDate);
+  const targetSolar = getSolarTimesLocal(lat, lng, targetDate);
 
-  const shiftedStartMinutes = sh * 60 + (sm || 0) - (daysDiff * 4);
-  const shiftedEndMinutes = eh * 60 + (em || 0) - (daysDiff * 4);
+  if (!baseSolar || !targetSolar) {
+    const [sh, sm] = startHHMM.split(':').map(Number);
+    const [eh, em] = endHHMM.split(':').map(Number);
 
-  const dayStart = new Date(
-    targetDate.getFullYear(),
-    targetDate.getMonth(),
-    targetDate.getDate(),
-    0,
-    0,
-    0
-  );
+    return {
+      start: minutesToLocalDate(targetDate, sh * 60 + (sm || 0)),
+      end: minutesToLocalDate(targetDate, eh * 60 + (em || 0))
+    };
+  }
+
+  const baseStartMin = hhmmToMinutes(startHHMM);
+  const baseEndMin = hhmmToMinutes(endHHMM);
+
+  const targetStartMin = mapSolarRelative(baseStartMin, baseSolar, targetSolar);
+  const targetEndMin = mapSolarRelative(baseEndMin, baseSolar, targetSolar);
 
   return {
-    start: new Date(dayStart.getTime() + shiftedStartMinutes * 60000),
-    end: new Date(dayStart.getTime() + shiftedEndMinutes * 60000)
+    start: minutesToLocalDate(targetDate, targetStartMin),
+    end: minutesToLocalDate(targetDate, targetEndMin)
   };
+}
+
+function hhmmToMinutes(hhmm) {
+  const [h, m] = String(hhmm || '').split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
+function minutesToLocalDate(dateObj, minutes) {
+  const d = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), 0, 0, 0, 0);
+  d.setMinutes(minutes);
+  return d;
+}
+
+function mapSolarRelative(obsMinutes, baseSolar, targetSolar) {
+  if (obsMinutes <= baseSolar.noon) {
+    const frac = safeFraction(obsMinutes, baseSolar.sunrise, baseSolar.noon);
+    return targetSolar.sunrise + frac * (targetSolar.noon - targetSolar.sunrise);
+  }
+
+  const frac = safeFraction(obsMinutes, baseSolar.noon, baseSolar.sunset);
+  return targetSolar.noon + frac * (targetSolar.sunset - targetSolar.noon);
+}
+
+function safeFraction(value, min, max) {
+  if (max <= min) return 0;
+  return clamp((value - min) / (max - min), 0, 1);
+}
+
+function getSolarTimesLocal(lat, lng, dateObj) {
+  const dayNum = dayOfYear(dateObj);
+  const gamma = (2 * Math.PI / 365) * (dayNum - 1);
+
+  const eqTime =
+    229.18 *
+    (0.000075 +
+      0.001868 * Math.cos(gamma) -
+      0.032077 * Math.sin(gamma) -
+      0.014615 * Math.cos(2 * gamma) -
+      0.040849 * Math.sin(2 * gamma));
+
+  const decl =
+    0.006918 -
+    0.399912 * Math.cos(gamma) +
+    0.070257 * Math.sin(gamma) -
+    0.006758 * Math.cos(2 * gamma) +
+    0.000907 * Math.sin(2 * gamma) -
+    0.002697 * Math.cos(3 * gamma) +
+    0.00148 * Math.sin(3 * gamma);
+
+  const latRad = deg2rad(lat);
+  const zenith = deg2rad(90.833);
+
+  const cosH =
+    (Math.cos(zenith) / (Math.cos(latRad) * Math.cos(decl))) -
+    Math.tan(latRad) * Math.tan(decl);
+
+  if (cosH < -1 || cosH > 1) return null;
+
+  const hourAngleDeg = rad2deg(Math.acos(cosH));
+  const tzHours = -dateObj.getTimezoneOffset() / 60;
+
+  const solarNoon = 720 - (4 * lng) - eqTime + (tzHours * 60);
+  const sunrise = solarNoon - (hourAngleDeg * 4);
+  const sunset = solarNoon + (hourAngleDeg * 4);
+
+  return {
+    sunrise,
+    noon: solarNoon,
+    sunset
+  };
+}
+
+function dayOfYear(dateObj) {
+  const start = new Date(dateObj.getFullYear(), 0, 0);
+  const diff = dateObj - start;
+  return Math.floor(diff / 86400000);
 }
 
 function chooseBestWindow(a, b, now) {
@@ -638,6 +733,10 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 
 function deg2rad(d) {
   return d * Math.PI / 180;
+}
+
+function rad2deg(r) {
+  return r * 180 / Math.PI;
 }
 
 function clamp(n, min, max) {
