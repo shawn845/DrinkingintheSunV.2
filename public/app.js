@@ -167,7 +167,7 @@ function isValidPubRow(pub) {
 
 function enrichPub(pub) {
   const now = new Date();
-  const today = formatDate(now);
+  const today = pub.baseDate;
   const aToday = shiftWindow(pub.baseDate, pub.spotAStart, pub.spotAEnd, today);
   const bToday = pub.spotB && pub.spotBStart && pub.spotBEnd ? shiftWindow(pub.baseDate, pub.spotBStart, pub.spotBEnd, today) : null;
   const best = chooseBestWindow(aToday, bToday, now);
