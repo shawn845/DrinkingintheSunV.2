@@ -1,3 +1,4 @@
+/* Drinking in the Sun v2 */
 
 :root{
   --bg:#fbfaf7;
@@ -73,8 +74,15 @@ img{display:block}
 .statusTop{font-size:13px;font-weight:850}
 .statusLine{font-size:12px;color:var(--muted);font-weight:700;margin-top:3px}
 .dist{font-size:12px;color:var(--muted);font-weight:700;white-space:nowrap}
-.statusSun .statusTop{color:#7e5b00}
+
+/* Base status colours */
 .statusShade .statusTop,.statusNone .statusTop{color:#606060}
+
+/* Weather-aware status colours */
+.statusSunBright .statusTop { color:#a86a00; } /* clear */
+.statusSunMuted  .statusTop { color:#7e5b00; } /* cloudy */
+.statusSunRainy  .statusTop { color:#606060; } /* rainy/grey */
+
 .isHidden{display:none !important}
 .map{
   width:100%;min-height:68vh;min-height:68svh;border-radius:20px;overflow:hidden;
