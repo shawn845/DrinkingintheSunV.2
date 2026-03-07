@@ -3,10 +3,10 @@ const FALLBACK_LOCATION = { name: 'Nottingham City Centre', lat: 52.9548, lng: -
 
 const state = {
   pubs: [],
-  userLocation: null,          // {lat,lng,name,fallback,accuracy?}
+  userLocation: null,
   weather: null,
   map: null,
-  markerLayer: null,
+  markerLayer: null,          // MarkerClusterGroup
   currentView: 'list',
   modalReturnView: 'list',
   userMarker: null,
@@ -124,6 +124,8 @@ async function useNearMe() {
   );
 }
 
+/* ---------------- CSV ---------------- */
+
 async function loadPubs() {
   const res = await fetch(CSV_URL);
   const text = await res.text();
@@ -195,6 +197,8 @@ function isValidPubRow(pub) {
             pub.spotA && pub.baseDate && pub.spotAStart && pub.spotAEnd);
 }
 
+/* ---------------- Sun shift ---------------- */
+
 function enrichPub(pub) {
   const now = new Date();
   const today = formatDate(now);
@@ -216,8 +220,6 @@ function enrichPub(pub) {
 function reEnrichAll() {
   state.pubs = state.pubs.map(enrichPub);
 }
-
-/* ---------- SUN SHIFT (improved) ---------- */
 
 function shiftWindow(lat, lng, baseDateStr, startHHMM, endHHMM, targetDateStr) {
   const baseDate = parseISODate(baseDateStr);
@@ -316,62 +318,39 @@ function dayOfYear(dateObj) {
   return Math.floor(diff / 86400000);
 }
 
-/* ---------- WINDOW / WEATHER DISPLAY HELPERS ---------- */
-
-function getWindows(pub) {
-  const out = [];
-  if (pub.spotAToday) out.push(pub.spotAToday);
-  if (pub.spotBToday) out.push(pub.spotBToday);
-  return out;
-}
-
-function getWindowStats(pub, now) {
-  const windows = getWindows(pub).filter(w => w && w.end > w.start);
-  const remaining = windows.filter(w => w.end > now);
-
-  const active = remaining.find(w => now >= w.start && now <= w.end) || null;
-  const next = remaining.filter(w => now < w.start).sort((a,b)=>a.start-b.start)[0] || null;
-
-  const latestRemainingWindow = remaining.sort((a,b)=>b.end-a.end)[0] || null;
-  const latestRemainingEnd = latestRemainingWindow ? latestRemainingWindow.end : null;
-
-  return { activeWindow: active, nextWindow: next, latestRemainingEnd, latestRemainingWindow };
-}
+/* ---------------- Weather tone + display ---------------- */
 
 function getWeatherTone() {
   if (!state.weather) return 'cloudy';
   const mood = weatherMood(state.weather.code, state.weather.rain);
-  return mood.className; // 'sunny' | 'cloudy' | 'rainy'
+  return mood.className; // sunny | cloudy | rainy
 }
 
-/**
- * Card + map pin status (weather-aware):
- * - If in sun window but cloudy: "Cloudy now" (muted mustard)
- * - If in sun window but rainy: "Not sunny now" (grey)
- * Keeps the useful "Sun until / Sun from" line from pub.bestNow.line.
- */
 function getDisplayStatus(pub) {
-  const tone = getWeatherTone(); // sunny/cloudy/rainy
+  const tone = getWeatherTone();
   const baseState = pub.bestNow.state; // sunny/shade/none
 
   let top = 'No more sun today';
   let line = pub.bestNow.line;
   let cls = 'statusNone';
-  let pin = '#9f9f9f';
+
+  // Pin colours
+  let pinClass = 'pinGrey';
 
   if (baseState === 'sunny') {
     if (tone === 'sunny') {
       top = 'Sunny now';
       cls = 'statusSunBright';
-      pin = '#f5c542';
+      pinClass = 'pinSunny';
     } else if (tone === 'cloudy') {
-      top = 'Cloudy now';
+      // label tweak: keep mustard tone but clarify meaning
+      top = 'Sun window now';
       cls = 'statusSunMuted';
-      pin = '#d6b24a';
+      pinClass = 'pinCloudy';
     } else {
       top = 'Not sunny now';
       cls = 'statusSunRainy';
-      pin = '#9f9f9f';
+      pinClass = 'pinGrey';
     }
   } else if (baseState === 'shade') {
     if (tone === 'rainy') {
@@ -384,23 +363,18 @@ function getDisplayStatus(pub) {
       top = 'Not sunny now';
       cls = 'statusShade';
     }
-    pin = '#9f9f9f';
+    pinClass = 'pinGrey';
   } else {
     top = 'No more sun today';
     cls = 'statusNone';
-    pin = '#9f9f9f';
+    pinClass = 'pinGrey';
   }
 
-  return { top, line, cls, pin, tone };
+  return { top, line, cls, pinClass, tone };
 }
 
-/**
- * Detail spot block status (weather-aware wording):
- * We keep sun-window times (Sun until/Sun from) but make the status line match the weather tone.
- */
 function buildSpotStateWeatherAware(windowObj, now) {
   const tone = getWeatherTone();
-
   if (!windowObj) return { status: 'Sun time unavailable', line: '', badge: 'Unavailable' };
 
   const inWindow = now >= windowObj.start && now <= windowObj.end;
@@ -408,7 +382,7 @@ function buildSpotStateWeatherAware(windowObj, now) {
 
   if (inWindow) {
     if (tone === 'sunny') return { status: 'Sunny now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
-    if (tone === 'cloudy') return { status: 'Cloudy now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
+    if (tone === 'cloudy') return { status: 'Sun window now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
     return { status: 'Not sunny now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
   }
 
@@ -419,6 +393,25 @@ function buildSpotStateWeatherAware(windowObj, now) {
   }
 
   return { status: 'Finished today', line: 'No more sun today', badge: 'Finished today' };
+}
+
+/* ---------------- Window selection ---------------- */
+
+function getWindows(pub) {
+  const out = [];
+  if (pub.spotAToday) out.push(pub.spotAToday);
+  if (pub.spotBToday) out.push(pub.spotBToday);
+  return out;
+}
+
+function getWindowStats(pub, now) {
+  const windows = getWindows(pub).filter(w => w && w.end > w.start);
+  const remaining = windows.filter(w => w.end > now);
+  const active = remaining.find(w => now >= w.start && now <= w.end) || null;
+  const next = remaining.filter(w => now < w.start).sort((a,b)=>a.start-b.start)[0] || null;
+  const latestRemainingWindow = remaining.sort((a,b)=>b.end-a.end)[0] || null;
+  const latestRemainingEnd = latestRemainingWindow ? latestRemainingWindow.end : null;
+  return { activeWindow: active, nextWindow: next, latestRemainingEnd, latestRemainingWindow };
 }
 
 function chooseBestWindow(a, b, now) {
@@ -434,398 +427,9 @@ function chooseBestWindow(a, b, now) {
   return { state: 'none', line: 'No more sun today', window: null };
 }
 
-/* ---------- RENDER ---------- */
+/* ---------------- Rendering ---------------- */
 
 function renderEverything() {
   reEnrichAll();
   setRowTitles();
-  renderSunniestNearMeRow();
-  renderLatestSunTodayRow();
-  renderAllList();
-  renderMapMarkers();
-}
-
-function setRowTitles() {
-  try {
-    const nearTitle = els.rowNearMeWrap.querySelector('.rowTitle');
-    if (nearTitle) nearTitle.textContent = 'Sunniest near me';
-
-    const latestWrap = els.rowSunniest.closest('.rowWrap');
-    const latestTitle = latestWrap ? latestWrap.querySelector('.rowTitle') : null;
-    if (latestTitle) latestTitle.textContent = 'Latest sun today';
-  } catch {}
-}
-
-function renderSunniestNearMeRow() {
-  if (!state.userLocation) {
-    els.rowNearMeWrap.classList.add('isHidden');
-    return;
-  }
-
-  els.rowNearMeWrap.classList.remove('isHidden');
-
-  const now = new Date();
-
-  const pubs = [...state.pubs]
-    .map(p => {
-      const dist = haversineKm(state.userLocation.lat, state.userLocation.lng, p.lat, p.lng);
-      const stats = getWindowStats(p, now);
-      const remainingMins = (stats.activeWindow ? (stats.activeWindow.end - now) : 0) / 60000;
-      return { ...p, distanceKm: dist, _remainingMins: remainingMins };
-    })
-    .filter(p => p.bestNow.state === 'sunny') // still based on sun-window
-    .sort((a, b) => {
-      if (a.distanceKm !== b.distanceKm) return a.distanceKm - b.distanceKm;
-      return b._remainingMins - a._remainingMins;
-    })
-    .slice(0, 10);
-
-  els.rowNearMe.innerHTML = '';
-
-  if (!pubs.length) {
-    els.rowNearMe.innerHTML = '<div class="emptyState">No pubs are currently in a sun window near you.</div>';
-    els.rowNearMeMeta.textContent = state.userLocation.fallback ? 'Using city centre' : '';
-    return;
-  }
-
-  pubs.forEach(pub => els.rowNearMe.appendChild(createCard(pub, true)));
-  els.rowNearMeMeta.textContent = state.userLocation.fallback ? 'Using city centre' : 'Closest options';
-}
-
-function renderLatestSunTodayRow() {
-  const now = new Date();
-
-  const pubs = [...state.pubs]
-    .map(p => {
-      const stats = getWindowStats(p, now);
-      const end = stats.latestRemainingEnd;
-      return { pub: p, latestEnd: end };
-    })
-    .filter(x => x.latestEnd)
-    .sort((a, b) => b.latestEnd - a.latestEnd)
-    .slice(0, 10);
-
-  els.rowSunniest.innerHTML = '';
-
-  if (!pubs.length) {
-    els.rowSunniest.innerHTML = '<div class="emptyState">No more sun windows remaining today.</div>';
-    els.rowSunniestMeta.textContent = '';
-    return;
-  }
-
-  pubs.forEach(x => els.rowSunniest.appendChild(createCard(x.pub, true)));
-  els.rowSunniestMeta.textContent = pubs[0].latestEnd ? `Latest ends ${fmtTime(pubs[0].latestEnd)}` : '';
-}
-
-function renderAllList() {
-  const pubs = [...state.pubs].sort(compareForMainList);
-  els.allList.innerHTML = '';
-  pubs.forEach(pub => els.allList.appendChild(createCard(pub, false)));
-  els.allMeta.textContent = `${pubs.length} pubs`;
-}
-
-function compareForMainList(a, b) {
-  const now = new Date();
-
-  const rank = (p) => p.bestNow.state === 'sunny' ? 0 : p.bestNow.state === 'shade' ? 1 : 2;
-  const ar = rank(a), br = rank(b);
-  if (ar !== br) return ar - br;
-
-  if (a.bestNow.state === 'sunny' && b.bestNow.state === 'sunny') {
-    const aRem = (a.bestNow.window.end - now);
-    const bRem = (b.bestNow.window.end - now);
-    return bRem - aRem;
-  }
-
-  if (a.bestNow.state === 'shade' && b.bestNow.state === 'shade') {
-    return a.bestNow.window.start - b.bestNow.window.start;
-  }
-
-  return a.name.localeCompare(b.name);
-}
-
-function createCard(pub, small = false) {
-  const wrap = document.createElement('div');
-  wrap.className = `card ${small ? 'cardSmall' : ''}`;
-
-  const display = getDisplayStatus(pub);
-  const distanceText = state.userLocation
-    ? `${(pub.distanceKm ?? haversineKm(state.userLocation.lat, state.userLocation.lng, pub.lat, pub.lng)).toFixed(1)} km`
-    : '';
-
-  wrap.innerHTML = `
-    <button class="cardButton" type="button" aria-label="Open ${escapeHtml(pub.name)} details">
-      <img class="cardImg" loading="lazy" src="${escapeAttr(pub.imageUrl || '')}" alt="${escapeAttr(pub.name)}" onerror="this.style.display='none';" />
-      <div class="cardBody">
-        <h3 class="cardTitle">${escapeHtml(pub.name)}</h3>
-        <div class="cardMeta">
-          <div class="${display.cls}">
-            <div class="statusTop">${escapeHtml(display.top)}</div>
-            <div class="statusLine">${escapeHtml(display.line)}</div>
-          </div>
-          ${state.userLocation ? `<div class="dist">${distanceText}</div>` : ''}
-        </div>
-      </div>
-    </button>
-  `;
-
-  wrap.querySelector('.cardButton').addEventListener('click', () => openDetail(pub.id, state.currentView));
-  return wrap;
-}
-
-/* ---------- DETAIL MODAL ---------- */
-
-function openDetail(pubId, sourceView = 'list') {
-  state.modalReturnView = sourceView || state.currentView;
-
-  if (state.currentView === 'map') setView('list', false);
-
-  const pub = state.pubs.find(p => p.id === pubId);
-  if (!pub) return;
-
-  const now = new Date();
-  const aState = buildSpotStateWeatherAware(pub.spotAToday, now);
-  const bState = pub.spotB && pub.spotBToday ? buildSpotStateWeatherAware(pub.spotBToday, now) : null;
-
-  els.modalContent.innerHTML = `
-    <img class="heroImg" src="${escapeAttr(pub.imageUrl || '')}" alt="${escapeAttr(pub.name)}" onerror="this.style.display='none';" />
-    <div class="detailBody">
-      <h2 class="detailTitle">${escapeHtml(pub.name)}</h2>
-      <div class="detailAddress">${escapeHtml(pub.address || '')}</div>
-      ${pub.notes ? `<div class="detailNotes">${escapeHtml(pub.notes)}</div>` : ''}
-      <div class="detailActions">
-        <a class="pillBtn" href="${mapsHref(pub.lat, pub.lng, pub.name)}" target="_blank" rel="noopener">Directions</a>
-      </div>
-    </div>
-    <div class="spotList">
-      ${renderSpotCard('Location', pub.spotA, pub.spotAToday, aState)}
-      ${pub.spotB && pub.spotBToday ? renderSpotCard('Location', pub.spotB, pub.spotBToday, bState) : ''}
-    </div>
-  `;
-
-  els.modalOverlay.classList.remove('isHidden');
-  history.pushState({ modal: pubId }, '', `#pub-${encodeURIComponent(pubId)}`);
-}
-
-function renderSpotCard(kicker, name, windowObj, stateObj) {
-  // Timeline range 07:00–23:00
-  const todayStart = new Date(windowObj.start);
-  todayStart.setHours(7, 0, 0, 0);
-
-  const todayEnd = new Date(windowObj.start);
-  todayEnd.setHours(23, 0, 0, 0);
-
-  const spanTotal = todayEnd - todayStart;
-  const sunLeftPct = clamp(((windowObj.start - todayStart) / spanTotal) * 100, 0, 100);
-  const sunWidthPct = clamp(((windowObj.end - windowObj.start) / spanTotal) * 100, 0, 100);
-  const nowPct = clamp(((new Date() - todayStart) / spanTotal) * 100, 0, 100);
-
-  return `
-    <section class="spotCard">
-      <div class="spotHead">
-        <div>
-          <div class="spotKicker">${escapeHtml(kicker)}</div>
-          <div class="spotName">${escapeHtml(name)}</div>
-        </div>
-        <div class="spotBadge">${escapeHtml(stateObj.badge)}</div>
-      </div>
-
-      <div class="spotStatus">${escapeHtml(stateObj.status)}</div>
-      <div class="spotSub">${escapeHtml(stateObj.line)}</div>
-
-      <div class="timelineWrap">
-        <div class="timelineLabels"><span>07:00</span><span>23:00</span></div>
-        <div class="timeline">
-          <div class="timelineSun" style="left:${sunLeftPct}%; width:${sunWidthPct}%;"></div>
-          <div class="timelineNow" style="left:${nowPct}%;"></div>
-        </div>
-        <div class="timelineNowLabel">now</div>
-      </div>
-
-      <div class="spotWindow">Sun today: ${fmtTime(windowObj.start)}–${fmtTime(windowObj.end)}</div>
-    </section>
-  `;
-}
-
-function closeModal(push = false) {
-  els.modalOverlay.classList.add('isHidden');
-  els.modalContent.innerHTML = '';
-
-  const ret = state.modalReturnView || 'list';
-  state.modalReturnView = 'list';
-
-  if (ret === 'map') setView('map', false);
-  if (push) history.pushState({}, '', state.currentView === 'map' ? '#map' : '#list');
-}
-
-/* ---------- WEATHER ---------- */
-
-async function refreshWeather(lat, lng) {
-  try {
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&hourly=temperature_2m,precipitation_probability,weathercode&forecast_days=1`;
-    const res = await fetch(url);
-    const data = await res.json();
-    state.weather = pickNextHour(data);
-    renderWeatherBar();
-  } catch {
-    state.weather = null;
-    renderWeatherBar();
-  }
-}
-
-function pickNextHour(data) {
-  if (!data || !data.hourly || !data.hourly.time?.length) return null;
-  const now = new Date();
-  const times = data.hourly.time.map(t => new Date(t));
-  let idx = times.findIndex(t => t > now);
-  if (idx === -1) idx = 0;
-  return {
-    time: times[idx],
-    temp: data.hourly.temperature_2m[idx],
-    rain: data.hourly.precipitation_probability[idx],
-    code: data.hourly.weathercode[idx]
-  };
-}
-
-function renderWeatherBar() {
-  if (!state.weather) {
-    els.weatherLine.textContent = 'Weather unavailable';
-    els.weatherIcon.textContent = '⛅';
-    els.weatherBar.className = 'weatherBar cloudy';
-    return;
-  }
-  const mood = weatherMood(state.weather.code, state.weather.rain);
-  els.weatherIcon.textContent = mood.icon;
-  els.weatherLine.textContent = `${Math.round(state.weather.temp)}°C · rain ${Math.round(state.weather.rain)}%`;
-  els.weatherBar.className = `weatherBar ${mood.className}`;
-}
-
-function weatherMood(code, rain) {
-  if (rain >= 50 || [51,53,55,61,63,65,80,81,82].includes(code)) return { icon: '🌧️', className: 'rainy' };
-  if (code === 0) return { icon: '☀️', className: 'sunny' };
-  return { icon: '⛅', className: 'cloudy' };
-}
-
-/* ---------- MAP ---------- */
-
-function initMap() {
-  state.map = L.map('map', { zoomControl: true }).setView([FALLBACK_LOCATION.lat, FALLBACK_LOCATION.lng], 13);
-
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors'
-  }).addTo(state.map);
-
-  state.markerLayer = L.layerGroup().addTo(state.map);
-
-  renderMapMarkers();
-  updateUserLocationMarker();
-}
-
-function renderMapMarkers() {
-  if (!state.map || !state.markerLayer) return;
-  state.markerLayer.clearLayers();
-
-  state.pubs.forEach(pub => {
-    const display = getDisplayStatus(pub);
-    const marker = L.circleMarker([pub.lat, pub.lng], {
-      radius: 9,
-      color: '#555',
-      weight: 1,
-      fillColor: display.pin,
-      fillOpacity: 0.95
-    });
-
-    marker.on('click', () => openDetail(pub.id, 'map'));
-    marker.bindTooltip(pub.name, { direction: 'top', offset: [0, -6] });
-    marker.addTo(state.markerLayer);
-  });
-}
-
-function updateUserLocationMarker() {
-  if (!state.map) return;
-
-  if (!state.userLocation || state.userLocation.fallback) {
-    clearUserLocationMarker();
-    return;
-  }
-
-  const latlng = [state.userLocation.lat, state.userLocation.lng];
-
-  if (!state.userMarker) {
-    state.userMarker = L.circleMarker(latlng, {
-      radius: 8,
-      color: '#1a73e8',
-      weight: 2,
-      fillColor: '#1a73e8',
-      fillOpacity: 0.85
-    }).addTo(state.map);
-  } else {
-    state.userMarker.setLatLng(latlng);
-  }
-
-  const acc = state.userLocation.accuracy;
-  if (Number.isFinite(acc) && acc > 0) {
-    if (!state.userAccuracyCircle) {
-      state.userAccuracyCircle = L.circle(latlng, {
-        radius: acc,
-        color: '#1a73e8',
-        weight: 1,
-        fillColor: '#1a73e8',
-        fillOpacity: 0.08
-      }).addTo(state.map);
-    } else {
-      state.userAccuracyCircle.setLatLng(latlng);
-      state.userAccuracyCircle.setRadius(acc);
-    }
-  }
-}
-
-function clearUserLocationMarker() {
-  if (state.userMarker) { state.userMarker.remove(); state.userMarker = null; }
-  if (state.userAccuracyCircle) { state.userAccuracyCircle.remove(); state.userAccuracyCircle = null; }
-}
-
-/* ---------- UTIL ---------- */
-
-function mapsHref(lat, lng, name) {
-  const q = encodeURIComponent(name || `${lat},${lng}`);
-  return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}(${q})`;
-}
-
-function parseISODate(str) {
-  const [y, m, d] = String(str || '').split('-').map(Number);
-  return new Date(y, (m || 1) - 1, d || 1);
-}
-
-function formatDate(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function fmtTime(d) {
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-}
-
-function haversineKm(lat1, lon1, lat2, lon2) {
-  const R = 6371;
-  const dLat = deg2rad(lat2 - lat1);
-  const dLon = deg2rad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
-    Math.sin(dLon / 2) ** 2;
-  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-}
-
-function deg2rad(d) { return d * Math.PI / 180; }
-function rad2deg(r) { return r * 180 / Math.PI; }
-function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
-
-function escapeHtml(str = '') {
-  return String(str).replace(/[&<>"']/g, m => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[m]));
-}
-function escapeAttr(str = '') { return escapeHtml(str); }
+  renderSunniest
