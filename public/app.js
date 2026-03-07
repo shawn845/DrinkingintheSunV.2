@@ -272,15 +272,10 @@ function minutesToLocalDate(dateObj, minutes) {
 function mapSolarRelative(obsMinutes, baseSolar, targetSolar) {
   if (obsMinutes <= baseSolar.noon) {
     const frac = safeFraction(obsMinutes, baseSolar.sunrise, baseSolar.noon);
-    return baseClamp(targetSolar.sunrise + frac * (targetSolar.noon - targetSolar.sunrise));
+    return clamp(targetSolar.sunrise + frac * (targetSolar.noon - targetSolar.sunrise), 0, 1440);
   }
   const frac = safeFraction(obsMinutes, baseSolar.noon, baseSolar.sunset);
-  return baseClamp(targetSolar.noon + frac * (targetSolar.sunset - targetSolar.noon));
-}
-
-function baseClamp(mins) {
-  // keep in 0..1440
-  return clamp(mins, 0, 1440);
+  return clamp(targetSolar.noon + frac * (targetSolar.sunset - targetSolar.noon), 0, 1440);
 }
 
 function safeFraction(value, min, max) {
@@ -357,7 +352,7 @@ function getDisplayStatus(pub) {
       cls = 'statusSunBright';
       pinClass = 'pinSunny';
     } else if (tone === 'cloudy') {
-      top = 'Sun window now';
+      top = 'Cloudy now';
       cls = 'statusSunMuted';
       pinClass = 'pinCloudy';
     } else {
@@ -395,7 +390,7 @@ function buildSpotStateWeatherAware(windowObj, now) {
 
   if (inWindow) {
     if (tone === 'sunny') return { status: 'Sunny now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
-    if (tone === 'cloudy') return { status: 'Sun window now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
+    if (tone === 'cloudy') return { status: 'Cloudy now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
     return { status: 'Not sunny now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
   }
 
@@ -408,7 +403,7 @@ function buildSpotStateWeatherAware(windowObj, now) {
   return { status: 'Finished today', line: 'No more sun today', badge: 'Finished today' };
 }
 
-/* ---------- Window selection ---------- */
+/* ---------- Window selection helpers ---------- */
 
 function getWindows(pub) {
   const out = [];
@@ -616,7 +611,6 @@ function openDetail(pubId, sourceView = 'list') {
 }
 
 function renderSpotCard(kicker, name, windowObj, stateObj) {
-  // Timeline range 07:00–23:00
   const todayStart = new Date(windowObj.start);
   todayStart.setHours(7, 0, 0, 0);
 
@@ -726,7 +720,6 @@ function initMap() {
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(state.map);
 
-  // MarkerClusterGroup (requires markercluster scripts in index.html)
   state.markerLayer = L.markerClusterGroup({
     showCoverageOnHover: false,
     maxClusterRadius: 42,
@@ -853,3 +846,16 @@ function escapeHtml(str = '') {
   }[m]));
 }
 function escapeAttr(str = '') { return escapeHtml(str); }
+
+/* ---------- Titles (keeps your HTML unchanged) ---------- */
+
+function setRowTitles() {
+  try {
+    const nearTitle = els.rowNearMeWrap.querySelector('.rowTitle');
+    if (nearTitle) nearTitle.textContent = 'Sunniest near me';
+
+    const latestWrap = els.rowSunniest.closest('.rowWrap');
+    const latestTitle = latestWrap ? latestWrap.querySelector('.rowTitle') : null;
+    if (latestTitle) latestTitle.textContent = 'Latest sun today';
+  } catch {}
+}
