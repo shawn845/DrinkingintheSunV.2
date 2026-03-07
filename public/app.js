@@ -316,7 +316,7 @@ function dayOfYear(dateObj) {
   return Math.floor(diff / 86400000);
 }
 
-/* ---------- STATUS / WINDOW HELPERS ---------- */
+/* ---------- WINDOW / WEATHER DISPLAY HELPERS ---------- */
 
 function getWindows(pub) {
   const out = [];
@@ -325,7 +325,6 @@ function getWindows(pub) {
   return out;
 }
 
-// Returns { activeWindow, nextWindow, latestRemainingEnd, latestRemainingWindow }
 function getWindowStats(pub, now) {
   const windows = getWindows(pub).filter(w => w && w.end > w.start);
   const remaining = windows.filter(w => w.end > now);
@@ -337,6 +336,89 @@ function getWindowStats(pub, now) {
   const latestRemainingEnd = latestRemainingWindow ? latestRemainingWindow.end : null;
 
   return { activeWindow: active, nextWindow: next, latestRemainingEnd, latestRemainingWindow };
+}
+
+function getWeatherTone() {
+  if (!state.weather) return 'cloudy';
+  const mood = weatherMood(state.weather.code, state.weather.rain);
+  return mood.className; // 'sunny' | 'cloudy' | 'rainy'
+}
+
+/**
+ * Card + map pin status (weather-aware):
+ * - If in sun window but cloudy: "Cloudy now" (muted mustard)
+ * - If in sun window but rainy: "Not sunny now" (grey)
+ * Keeps the useful "Sun until / Sun from" line from pub.bestNow.line.
+ */
+function getDisplayStatus(pub) {
+  const tone = getWeatherTone(); // sunny/cloudy/rainy
+  const baseState = pub.bestNow.state; // sunny/shade/none
+
+  let top = 'No more sun today';
+  let line = pub.bestNow.line;
+  let cls = 'statusNone';
+  let pin = '#9f9f9f';
+
+  if (baseState === 'sunny') {
+    if (tone === 'sunny') {
+      top = 'Sunny now';
+      cls = 'statusSunBright';
+      pin = '#f5c542';
+    } else if (tone === 'cloudy') {
+      top = 'Cloudy now';
+      cls = 'statusSunMuted';
+      pin = '#d6b24a';
+    } else {
+      top = 'Not sunny now';
+      cls = 'statusSunRainy';
+      pin = '#9f9f9f';
+    }
+  } else if (baseState === 'shade') {
+    if (tone === 'rainy') {
+      top = 'Rainy now';
+      cls = 'statusSunRainy';
+    } else if (tone === 'cloudy') {
+      top = 'Cloudy now';
+      cls = 'statusShade';
+    } else {
+      top = 'Not sunny now';
+      cls = 'statusShade';
+    }
+    pin = '#9f9f9f';
+  } else {
+    top = 'No more sun today';
+    cls = 'statusNone';
+    pin = '#9f9f9f';
+  }
+
+  return { top, line, cls, pin, tone };
+}
+
+/**
+ * Detail spot block status (weather-aware wording):
+ * We keep sun-window times (Sun until/Sun from) but make the status line match the weather tone.
+ */
+function buildSpotStateWeatherAware(windowObj, now) {
+  const tone = getWeatherTone();
+
+  if (!windowObj) return { status: 'Sun time unavailable', line: '', badge: 'Unavailable' };
+
+  const inWindow = now >= windowObj.start && now <= windowObj.end;
+  const upcoming = now < windowObj.start;
+
+  if (inWindow) {
+    if (tone === 'sunny') return { status: 'Sunny now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
+    if (tone === 'cloudy') return { status: 'Cloudy now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
+    return { status: 'Not sunny now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
+  }
+
+  if (upcoming) {
+    if (tone === 'rainy') return { status: 'Rainy now', line: `Sun from ${fmtTime(windowObj.start)}`, badge: 'Later today' };
+    if (tone === 'cloudy') return { status: 'Cloudy now', line: `Sun from ${fmtTime(windowObj.start)}`, badge: 'Later today' };
+    return { status: 'Not sunny now', line: `Sun from ${fmtTime(windowObj.start)}`, badge: 'Later today' };
+  }
+
+  return { status: 'Finished today', line: 'No more sun today', badge: 'Finished today' };
 }
 
 function chooseBestWindow(a, b, now) {
@@ -352,13 +434,6 @@ function chooseBestWindow(a, b, now) {
   return { state: 'none', line: 'No more sun today', window: null };
 }
 
-function buildSpotState(windowObj, now) {
-  if (!windowObj) return { status: 'Sun time unavailable', line: '', badge: 'Unavailable' };
-  if (now >= windowObj.start && now <= windowObj.end) return { status: 'Sunny now', line: `Sun until ${fmtTime(windowObj.end)}`, badge: 'Best now' };
-  if (now < windowObj.start) return { status: 'Not sunny now', line: `Sun from ${fmtTime(windowObj.start)}`, badge: 'Later today' };
-  return { status: 'Not sunny now', line: 'No more sun today', badge: 'Finished today' };
-}
-
 /* ---------- RENDER ---------- */
 
 function renderEverything() {
@@ -371,7 +446,6 @@ function renderEverything() {
 }
 
 function setRowTitles() {
-  // Rename titles without editing index.html
   try {
     const nearTitle = els.rowNearMeWrap.querySelector('.rowTitle');
     if (nearTitle) nearTitle.textContent = 'Sunniest near me';
@@ -399,23 +473,23 @@ function renderSunniestNearMeRow() {
       const remainingMins = (stats.activeWindow ? (stats.activeWindow.end - now) : 0) / 60000;
       return { ...p, distanceKm: dist, _remainingMins: remainingMins };
     })
-    .filter(p => p.bestNow.state === 'sunny') // only sunny NOW
+    .filter(p => p.bestNow.state === 'sunny') // still based on sun-window
     .sort((a, b) => {
-      if (a.distanceKm !== b.distanceKm) return a.distanceKm - b.distanceKm;         // closest first
-      return b._remainingMins - a._remainingMins;                                     // then longer remaining
+      if (a.distanceKm !== b.distanceKm) return a.distanceKm - b.distanceKm;
+      return b._remainingMins - a._remainingMins;
     })
     .slice(0, 10);
 
   els.rowNearMe.innerHTML = '';
 
   if (!pubs.length) {
-    els.rowNearMe.innerHTML = '<div class="emptyState">No sunny pubs near you right now.</div>';
+    els.rowNearMe.innerHTML = '<div class="emptyState">No pubs are currently in a sun window near you.</div>';
     els.rowNearMeMeta.textContent = state.userLocation.fallback ? 'Using city centre' : '';
     return;
   }
 
   pubs.forEach(pub => els.rowNearMe.appendChild(createCard(pub, true)));
-  els.rowNearMeMeta.textContent = state.userLocation.fallback ? 'Using city centre' : 'Closest sunny pubs';
+  els.rowNearMeMeta.textContent = state.userLocation.fallback ? 'Using city centre' : 'Closest options';
 }
 
 function renderLatestSunTodayRow() {
@@ -425,10 +499,10 @@ function renderLatestSunTodayRow() {
     .map(p => {
       const stats = getWindowStats(p, now);
       const end = stats.latestRemainingEnd;
-      return { pub: p, latestEnd: end, latestWin: stats.latestRemainingWindow };
+      return { pub: p, latestEnd: end };
     })
-    .filter(x => x.latestEnd) // has some remaining sun today
-    .sort((a, b) => b.latestEnd - a.latestEnd) // latest finish first
+    .filter(x => x.latestEnd)
+    .sort((a, b) => b.latestEnd - a.latestEnd)
     .slice(0, 10);
 
   els.rowSunniest.innerHTML = '';
@@ -440,9 +514,7 @@ function renderLatestSunTodayRow() {
   }
 
   pubs.forEach(x => els.rowSunniest.appendChild(createCard(x.pub, true)));
-
-  const latest = pubs[0].latestEnd;
-  els.rowSunniestMeta.textContent = latest ? `Latest ends ${fmtTime(latest)}` : '';
+  els.rowSunniestMeta.textContent = pubs[0].latestEnd ? `Latest ends ${fmtTime(pubs[0].latestEnd)}` : '';
 }
 
 function renderAllList() {
@@ -452,7 +524,6 @@ function renderAllList() {
   els.allMeta.textContent = `${pubs.length} pubs`;
 }
 
-// Main list: sunny now (longest remaining first), then upcoming (soonest start), then none.
 function compareForMainList(a, b) {
   const now = new Date();
 
@@ -463,11 +534,11 @@ function compareForMainList(a, b) {
   if (a.bestNow.state === 'sunny' && b.bestNow.state === 'sunny') {
     const aRem = (a.bestNow.window.end - now);
     const bRem = (b.bestNow.window.end - now);
-    return bRem - aRem; // longer remaining first
+    return bRem - aRem;
   }
 
   if (a.bestNow.state === 'shade' && b.bestNow.state === 'shade') {
-    return a.bestNow.window.start - b.bestNow.window.start; // sooner starts first
+    return a.bestNow.window.start - b.bestNow.window.start;
   }
 
   return a.name.localeCompare(b.name);
@@ -477,7 +548,7 @@ function createCard(pub, small = false) {
   const wrap = document.createElement('div');
   wrap.className = `card ${small ? 'cardSmall' : ''}`;
 
-  const statusClass = pub.bestNow.state === 'sunny' ? 'statusSun' : pub.bestNow.state === 'shade' ? 'statusShade' : 'statusNone';
+  const display = getDisplayStatus(pub);
   const distanceText = state.userLocation
     ? `${(pub.distanceKm ?? haversineKm(state.userLocation.lat, state.userLocation.lng, pub.lat, pub.lng)).toFixed(1)} km`
     : '';
@@ -488,15 +559,9 @@ function createCard(pub, small = false) {
       <div class="cardBody">
         <h3 class="cardTitle">${escapeHtml(pub.name)}</h3>
         <div class="cardMeta">
-          <div class="${statusClass}">
-            <div class="statusTop">${
-              pub.bestNow.state === 'sunny'
-                ? 'Sunny now'
-                : pub.bestNow.state === 'shade'
-                  ? 'Not sunny now'
-                  : 'No more sun today'
-            }</div>
-            <div class="statusLine">${escapeHtml(pub.bestNow.line)}</div>
+          <div class="${display.cls}">
+            <div class="statusTop">${escapeHtml(display.top)}</div>
+            <div class="statusLine">${escapeHtml(display.line)}</div>
           </div>
           ${state.userLocation ? `<div class="dist">${distanceText}</div>` : ''}
         </div>
@@ -513,15 +578,14 @@ function createCard(pub, small = false) {
 function openDetail(pubId, sourceView = 'list') {
   state.modalReturnView = sourceView || state.currentView;
 
-  // Avoid map sitting behind modal
   if (state.currentView === 'map') setView('list', false);
 
   const pub = state.pubs.find(p => p.id === pubId);
   if (!pub) return;
 
   const now = new Date();
-  const aState = buildSpotState(pub.spotAToday, now);
-  const bState = pub.spotB && pub.spotBToday ? buildSpotState(pub.spotBToday, now) : null;
+  const aState = buildSpotStateWeatherAware(pub.spotAToday, now);
+  const bState = pub.spotB && pub.spotBToday ? buildSpotStateWeatherAware(pub.spotBToday, now) : null;
 
   els.modalContent.innerHTML = `
     <img class="heroImg" src="${escapeAttr(pub.imageUrl || '')}" alt="${escapeAttr(pub.name)}" onerror="this.style.display='none';" />
@@ -662,12 +726,12 @@ function renderMapMarkers() {
   state.markerLayer.clearLayers();
 
   state.pubs.forEach(pub => {
-    const color = pub.bestNow.state === 'sunny' ? '#f5c542' : '#9f9f9f';
+    const display = getDisplayStatus(pub);
     const marker = L.circleMarker([pub.lat, pub.lng], {
       radius: 9,
       color: '#555',
       weight: 1,
-      fillColor: color,
+      fillColor: display.pin,
       fillOpacity: 0.95
     });
 
