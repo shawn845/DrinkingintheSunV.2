@@ -88,6 +88,19 @@ img{display:block}
   width:100%;min-height:68vh;min-height:68svh;border-radius:20px;overflow:hidden;
   box-shadow:var(--shadow);border:1px solid var(--line)
 }
+
+/* Custom map pin dots (for MarkerCluster markers) */
+.pin{
+  width:14px;
+  height:14px;
+  border-radius:50%;
+  border:2px solid #555;
+  box-shadow:0 2px 6px rgba(0,0,0,.12);
+}
+.pinSunny{ background:#f5c542; }
+.pinCloudy{ background:#d6b24a; }
+.pinGrey{ background:#9f9f9f; }
+
 .modalOverlay{
   position:fixed;inset:0;background:rgba(0,0,0,.46);z-index:50;display:flex;
   align-items:flex-end;justify-content:center;padding:0
