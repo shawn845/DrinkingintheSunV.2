@@ -4,13 +4,14 @@ const FALLBACK_LOCATION = { name: 'Nottingham City Centre', lat: 52.9548, lng: -
 const state = {
   pubs: [],
   userLocation: null,
-  weather: null,
+  weather: null, // { current: {...}, nextHour: {...} }
   map: null,
-  markerLayer: null, // MarkerClusterGroup
+  markerLayer: null,
   currentView: 'list',
   modalReturnView: 'list',
   userMarker: null,
-  userAccuracyCircle: null
+  userAccuracyCircle: null,
+  weatherRefreshTimer: null
 };
 
 const els = {
@@ -31,7 +32,8 @@ const els = {
   btnClose: document.getElementById('btnClose'),
   weatherBar: document.getElementById('weatherBar'),
   weatherIcon: document.getElementById('weatherIcon'),
-  weatherLine: document.getElementById('weatherLine')
+  weatherLine: document.getElementById('weatherLine'),
+  weatherTitle: document.querySelector('.weatherTitle')
 };
 
 document.addEventListener('DOMContentLoaded', init);
@@ -39,13 +41,11 @@ document.addEventListener('DOMContentLoaded', init);
 async function init() {
   wireUi();
   state.pubs = (await loadPubs()).map(enrichPub);
-
   await refreshWeather(FALLBACK_LOCATION.lat, FALLBACK_LOCATION.lng);
-
   renderEverything();
   initMap();
   setRowTitles();
-
+  startWeatherRefresh();
   if (location.hash === '#map') setView('map', false);
 }
 
@@ -53,8 +53,8 @@ function wireUi() {
   els.btnList.addEventListener('click', () => setView('list'));
   els.btnMap.addEventListener('click', () => setView('map'));
   els.btnNearMe.addEventListener('click', useNearMe);
-
   els.btnClose.addEventListener('click', () => closeModal(true));
+
   els.modalOverlay.addEventListener('click', (e) => {
     if (e.target === els.modalOverlay) closeModal(true);
   });
@@ -88,12 +88,12 @@ function setView(view, push = true) {
   if (push) history.pushState({}, '', isList ? '#list' : '#map');
 }
 
-/* ---------- Near me ---------- */
-
 async function useNearMe() {
   if (!navigator.geolocation) {
     state.userLocation = { ...FALLBACK_LOCATION, fallback: true };
+    await refreshWeather(FALLBACK_LOCATION.lat, FALLBACK_LOCATION.lng);
     renderEverything();
+    startWeatherRefresh();
     return;
   }
 
@@ -110,27 +110,37 @@ async function useNearMe() {
       };
 
       els.btnNearMe.textContent = 'Near me';
-
       await refreshWeather(state.userLocation.lat, state.userLocation.lng);
       renderEverything();
-
       updateUserLocationMarker();
+      startWeatherRefresh();
+
       if (state.map) state.map.setView([state.userLocation.lat, state.userLocation.lng], 13);
     },
     async () => {
       state.userLocation = { ...FALLBACK_LOCATION, fallback: true };
       els.btnNearMe.textContent = 'Near me';
-
       await refreshWeather(FALLBACK_LOCATION.lat, FALLBACK_LOCATION.lng);
       renderEverything();
-
       clearUserLocationMarker();
+      startWeatherRefresh();
     },
     { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
   );
 }
 
-/* ---------- CSV ---------- */
+function startWeatherRefresh() {
+  if (state.weatherRefreshTimer) clearInterval(state.weatherRefreshTimer);
+
+  state.weatherRefreshTimer = setInterval(async () => {
+    const loc = state.userLocation && !state.userLocation.fallback
+      ? state.userLocation
+      : FALLBACK_LOCATION;
+
+    await refreshWeather(loc.lat, loc.lng);
+    renderEverything();
+  }, 5 * 60 * 1000);
+}
 
 async function loadPubs() {
   const res = await fetch(CSV_URL);
@@ -153,6 +163,7 @@ function parseCsv(text) {
     headers.forEach((h, i) => { obj[h] = String(cols[i] ?? '').trim(); });
     rows.push(obj);
   }
+
   return rows;
 }
 
@@ -164,12 +175,20 @@ function splitCsvLine(line) {
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') { cur += '"'; i++; }
-      else inQuotes = !inQuotes;
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
     } else if (ch === ',' && !inQuotes) {
-      out.push(cur); cur = '';
-    } else cur += ch;
+      out.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
   }
+
   out.push(cur);
   return out;
 }
@@ -202,13 +221,16 @@ function normalizeRow(row) {
 
 function isValidPubRow(pub) {
   return !!(
-    pub.id && pub.name &&
-    Number.isFinite(pub.lat) && Number.isFinite(pub.lng) &&
-    pub.spotA && pub.baseDate && pub.spotAStart && pub.spotAEnd
+    pub.id &&
+    pub.name &&
+    Number.isFinite(pub.lat) &&
+    Number.isFinite(pub.lng) &&
+    pub.spotA &&
+    pub.baseDate &&
+    pub.spotAStart &&
+    pub.spotAEnd
   );
 }
-
-/* ---------- Sun shift (improved) ---------- */
 
 function enrichPub(pub) {
   const now = new Date();
@@ -220,7 +242,6 @@ function enrichPub(pub) {
     : null;
 
   const best = chooseBestWindow(aToday, bToday, now);
-
   const distanceKm = state.userLocation
     ? haversineKm(state.userLocation.lat, state.userLocation.lng, pub.lat, pub.lng)
     : null;
@@ -249,12 +270,9 @@ function shiftWindow(lat, lng, baseDateStr, startHHMM, endHHMM, targetDateStr) {
   const baseStartMin = hhmmToMinutes(startHHMM);
   const baseEndMin = hhmmToMinutes(endHHMM);
 
-  const targetStartMin = mapSolarRelative(baseStartMin, baseSolar, targetSolar);
-  const targetEndMin = mapSolarRelative(baseEndMin, baseSolar, targetSolar);
-
   return {
-    start: minutesToLocalDate(targetDate, targetStartMin),
-    end: minutesToLocalDate(targetDate, targetEndMin)
+    start: minutesToLocalDate(targetDate, mapSolarRelative(baseStartMin, baseSolar, targetSolar)),
+    end: minutesToLocalDate(targetDate, mapSolarRelative(baseEndMin, baseSolar, targetSolar))
   };
 }
 
@@ -272,10 +290,11 @@ function minutesToLocalDate(dateObj, minutes) {
 function mapSolarRelative(obsMinutes, baseSolar, targetSolar) {
   if (obsMinutes <= baseSolar.noon) {
     const frac = safeFraction(obsMinutes, baseSolar.sunrise, baseSolar.noon);
-    return clamp(targetSolar.sunrise + frac * (targetSolar.noon - targetSolar.sunrise), 0, 1440);
+    return targetSolar.sunrise + frac * (targetSolar.noon - targetSolar.sunrise);
   }
+
   const frac = safeFraction(obsMinutes, baseSolar.noon, baseSolar.sunset);
-  return clamp(targetSolar.noon + frac * (targetSolar.sunset - targetSolar.noon), 0, 1440);
+  return targetSolar.noon + frac * (targetSolar.sunset - targetSolar.noon);
 }
 
 function safeFraction(value, min, max) {
@@ -325,40 +344,115 @@ function getSolarTimesLocal(lat, lng, dateObj) {
 
 function dayOfYear(dateObj) {
   const start = new Date(dateObj.getFullYear(), 0, 0);
-  const diff = dateObj - start;
-  return Math.floor(diff / 86400000);
+  return Math.floor((dateObj - start) / 86400000);
 }
 
-/* ---------- Weather tone + display ---------- */
+function getWindows(pub) {
+  const out = [];
+  if (pub.spotAToday) out.push(pub.spotAToday);
+  if (pub.spotBToday) out.push(pub.spotBToday);
+  return out;
+}
+
+function getWindowStats(pub, now) {
+  const windows = getWindows(pub).filter(w => w && w.end > w.start);
+  const remaining = windows.filter(w => w.end > now);
+
+  const active = remaining.find(w => now >= w.start && now <= w.end) || null;
+  const next = remaining.filter(w => now < w.start).sort((a, b) => a.start - b.start)[0] || null;
+  const latestRemainingWindow = remaining.sort((a, b) => b.end - a.end)[0] || null;
+  const latestRemainingEnd = latestRemainingWindow ? latestRemainingWindow.end : null;
+
+  return { activeWindow: active, nextWindow: next, latestRemainingEnd, latestRemainingWindow };
+}
+
+function weatherMood(code, wetValue = 0, cloudCover = null) {
+  const rainyCodes = [51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99];
+  const cloudyCodes = [2, 3, 45, 48];
+  const sunnyCodes = [0, 1];
+
+  if (rainyCodes.includes(code) || wetValue >= 0.1) {
+    return { icon: '🌧️', className: 'rainy' };
+  }
+
+  if (cloudyCodes.includes(code)) {
+    return { icon: '⛅', className: 'cloudy' };
+  }
+
+  if (sunnyCodes.includes(code)) {
+    if (cloudCover != null && cloudCover > 65) {
+      return { icon: '⛅', className: 'cloudy' };
+    }
+    return { icon: '☀️', className: 'sunny' };
+  }
+
+  return { icon: '⛅', className: 'cloudy' };
+}
+
+function currentWeatherLabel(currentObj) {
+  if (!currentObj) return 'Weather unavailable';
+
+  const code = currentObj.code;
+  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99].includes(code) || currentObj.precip >= 0.1) {
+    return 'Rainy';
+  }
+  if (code === 0) return currentObj.isDay ? 'Sunny' : 'Clear';
+  if (code === 1) return currentObj.isDay ? 'Mostly sunny' : 'Mostly clear';
+  if (code === 2) return 'Partly cloudy';
+  if (code === 3) return 'Cloudy';
+  if ([45, 48].includes(code)) return 'Foggy';
+  return 'Cloudy';
+}
+
+function nextHourLabel(nextObj) {
+  if (!nextObj) return 'Unavailable';
+
+  const code = nextObj.code;
+  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99].includes(code) || nextObj.rain >= 50) {
+    return 'Rainy';
+  }
+  if (code === 0) return 'Sunny';
+  if (code === 1) return 'Mostly sunny';
+  if (code === 2) return 'Partly cloudy';
+  if (code === 3) return 'Cloudy';
+  if ([45, 48].includes(code)) return 'Foggy';
+  return 'Cloudy';
+}
 
 function getWeatherTone() {
-  if (!state.weather) return 'cloudy';
-  const mood = weatherMood(state.weather.code, state.weather.rain);
-  return mood.className; // sunny | cloudy | rainy
+  if (!state.weather || !state.weather.current) return 'cloudy';
+
+  const mood = weatherMood(
+    state.weather.current.code,
+    state.weather.current.precip,
+    state.weather.current.cloudCover
+  );
+
+  return mood.className;
 }
 
 function getDisplayStatus(pub) {
   const tone = getWeatherTone();
-  const baseState = pub.bestNow.state; // sunny/shade/none
+  const baseState = pub.bestNow.state;
 
   let top = 'No more sun today';
   let line = pub.bestNow.line;
   let cls = 'statusNone';
-  let pinClass = 'pinGrey';
+  let pin = '#9f9f9f';
 
   if (baseState === 'sunny') {
     if (tone === 'sunny') {
       top = 'Sunny now';
       cls = 'statusSunBright';
-      pinClass = 'pinSunny';
+      pin = '#f5c542';
     } else if (tone === 'cloudy') {
       top = 'Cloudy now';
       cls = 'statusSunMuted';
-      pinClass = 'pinCloudy';
+      pin = '#d6b24a';
     } else {
       top = 'Not sunny now';
       cls = 'statusSunRainy';
-      pinClass = 'pinGrey';
+      pin = '#9f9f9f';
     }
   } else if (baseState === 'shade') {
     if (tone === 'rainy') {
@@ -371,18 +465,14 @@ function getDisplayStatus(pub) {
       top = 'Not sunny now';
       cls = 'statusShade';
     }
-    pinClass = 'pinGrey';
-  } else {
-    top = 'No more sun today';
-    cls = 'statusNone';
-    pinClass = 'pinGrey';
   }
 
-  return { top, line, cls, pinClass, tone };
+  return { top, line, cls, pin, tone };
 }
 
 function buildSpotStateWeatherAware(windowObj, now) {
   const tone = getWeatherTone();
+
   if (!windowObj) return { status: 'Sun time unavailable', line: '', badge: 'Unavailable' };
 
   const inWindow = now >= windowObj.start && now <= windowObj.end;
@@ -403,28 +493,6 @@ function buildSpotStateWeatherAware(windowObj, now) {
   return { status: 'Finished today', line: 'No more sun today', badge: 'Finished today' };
 }
 
-/* ---------- Window selection helpers ---------- */
-
-function getWindows(pub) {
-  const out = [];
-  if (pub.spotAToday) out.push(pub.spotAToday);
-  if (pub.spotBToday) out.push(pub.spotBToday);
-  return out;
-}
-
-function getWindowStats(pub, now) {
-  const windows = getWindows(pub).filter(w => w && w.end > w.start);
-  const remaining = windows.filter(w => w.end > now);
-
-  const active = remaining.find(w => now >= w.start && now <= w.end) || null;
-  const next = remaining.filter(w => now < w.start).sort((a,b)=>a.start-b.start)[0] || null;
-
-  const latestRemainingWindow = remaining.sort((a,b)=>b.end-a.end)[0] || null;
-  const latestRemainingEnd = latestRemainingWindow ? latestRemainingWindow.end : null;
-
-  return { activeWindow: active, nextWindow: next, latestRemainingEnd, latestRemainingWindow };
-}
-
 function chooseBestWindow(a, b, now) {
   const candidates = [a, b].filter(Boolean);
   if (!candidates.length) return { state: 'none', line: 'Sun time unavailable', window: null };
@@ -437,8 +505,6 @@ function chooseBestWindow(a, b, now) {
 
   return { state: 'none', line: 'No more sun today', window: null };
 }
-
-/* ---------- Rendering ---------- */
 
 function renderEverything() {
   reEnrichAll();
@@ -467,7 +533,6 @@ function renderSunniestNearMeRow() {
   }
 
   els.rowNearMeWrap.classList.remove('isHidden');
-
   const now = new Date();
 
   const pubs = [...state.pubs]
@@ -502,8 +567,7 @@ function renderLatestSunTodayRow() {
   const pubs = [...state.pubs]
     .map(p => {
       const stats = getWindowStats(p, now);
-      const end = stats.latestRemainingEnd;
-      return { pub: p, latestEnd: end };
+      return { pub: p, latestEnd: stats.latestRemainingEnd };
     })
     .filter(x => x.latestEnd)
     .sort((a, b) => b.latestEnd - a.latestEnd)
@@ -530,15 +594,12 @@ function renderAllList() {
 
 function compareForMainList(a, b) {
   const now = new Date();
-
-  const rank = (p) => p.bestNow.state === 'sunny' ? 0 : p.bestNow.state === 'shade' ? 1 : 2;
+  const rank = p => p.bestNow.state === 'sunny' ? 0 : p.bestNow.state === 'shade' ? 1 : 2;
   const ar = rank(a), br = rank(b);
   if (ar !== br) return ar - br;
 
   if (a.bestNow.state === 'sunny' && b.bestNow.state === 'sunny') {
-    const aRem = (a.bestNow.window.end - now);
-    const bRem = (b.bestNow.window.end - now);
-    return bRem - aRem;
+    return (b.bestNow.window.end - now) - (a.bestNow.window.end - now);
   }
 
   if (a.bestNow.state === 'shade' && b.bestNow.state === 'shade') {
@@ -576,8 +637,6 @@ function createCard(pub, small = false) {
   wrap.querySelector('.cardButton').addEventListener('click', () => openDetail(pub.id, state.currentView));
   return wrap;
 }
-
-/* ---------- Detail modal ---------- */
 
 function openDetail(pubId, sourceView = 'list') {
   state.modalReturnView = sourceView || state.currentView;
@@ -660,19 +719,33 @@ function closeModal(push = false) {
   if (push) history.pushState({}, '', state.currentView === 'map' ? '#map' : '#list');
 }
 
-/* ---------- Weather ---------- */
-
 async function refreshWeather(lat, lng) {
   try {
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&hourly=temperature_2m,precipitation_probability,weathercode&forecast_days=1`;
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,precipitation,weather_code,cloud_cover,is_day&hourly=temperature_2m,precipitation_probability,weather_code,cloud_cover&forecast_days=1`;
     const res = await fetch(url);
     const data = await res.json();
-    state.weather = pickNextHour(data);
+
+    state.weather = {
+      current: pickCurrent(data),
+      nextHour: pickNextHour(data)
+    };
+
     renderWeatherBar();
   } catch {
     state.weather = null;
     renderWeatherBar();
   }
+}
+
+function pickCurrent(data) {
+  if (!data || !data.current) return null;
+  return {
+    temp: data.current.temperature_2m,
+    precip: data.current.precipitation ?? 0,
+    code: data.current.weather_code,
+    cloudCover: data.current.cloud_cover ?? null,
+    isDay: Boolean(data.current.is_day)
+  };
 }
 
 function pickNextHour(data) {
@@ -686,32 +759,35 @@ function pickNextHour(data) {
   return {
     time: times[idx],
     temp: data.hourly.temperature_2m[idx],
-    rain: data.hourly.precipitation_probability[idx],
-    code: data.hourly.weathercode[idx]
+    rain: data.hourly.precipitation_probability[idx] ?? 0,
+    code: data.hourly.weather_code[idx],
+    cloudCover: data.hourly.cloud_cover?.[idx] ?? null
   };
 }
 
 function renderWeatherBar() {
-  if (!state.weather) {
-    els.weatherLine.textContent = 'Weather unavailable';
+  if (!state.weather || !state.weather.current) {
     els.weatherIcon.textContent = '⛅';
+    if (els.weatherTitle) els.weatherTitle.textContent = 'Current conditions';
+    els.weatherLine.textContent = 'Weather unavailable';
     els.weatherBar.className = 'weatherBar cloudy';
     return;
   }
 
-  const mood = weatherMood(state.weather.code, state.weather.rain);
-  els.weatherIcon.textContent = mood.icon;
-  els.weatherLine.textContent = `${Math.round(state.weather.temp)}°C · rain ${Math.round(state.weather.rain)}%`;
-  els.weatherBar.className = `weatherBar ${mood.className}`;
-}
+  const current = state.weather.current;
+  const next = state.weather.nextHour;
 
-function weatherMood(code, rain) {
-  if (rain >= 50 || [51,53,55,61,63,65,80,81,82].includes(code)) return { icon: '🌧️', className: 'rainy' };
-  if (code === 0) return { icon: '☀️', className: 'sunny' };
-  return { icon: '⛅', className: 'cloudy' };
-}
+  const currentMood = weatherMood(current.code, current.precip, current.cloudCover);
+  const currentLabel = currentWeatherLabel(current);
+  const nextLabel = next ? nextHourLabel(next) : 'Unavailable';
+  const nextTemp = next ? `${Math.round(next.temp)}°C` : '—';
+  const nextRain = next ? `${Math.round(next.rain)}% rain` : '—';
 
-/* ---------- Map + clustering ---------- */
+  els.weatherIcon.textContent = currentMood.icon;
+  if (els.weatherTitle) els.weatherTitle.textContent = 'Current conditions';
+  els.weatherBar.className = `weatherBar ${currentMood.className}`;
+  els.weatherLine.textContent = `${currentLabel} · ${Math.round(current.temp)}°C · Next hour: ${nextLabel} · ${nextTemp} · ${nextRain}`;
+}
 
 function initMap() {
   state.map = L.map('map', { zoomControl: true }).setView([FALLBACK_LOCATION.lat, FALLBACK_LOCATION.lng], 13);
@@ -720,39 +796,28 @@ function initMap() {
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(state.map);
 
-  state.markerLayer = L.markerClusterGroup({
-    showCoverageOnHover: false,
-    maxClusterRadius: 42,
-    spiderfyOnMaxZoom: true
-  });
-
-  state.map.addLayer(state.markerLayer);
-
+  state.markerLayer = L.layerGroup().addTo(state.map);
   renderMapMarkers();
   updateUserLocationMarker();
 }
 
 function renderMapMarkers() {
   if (!state.map || !state.markerLayer) return;
-
   state.markerLayer.clearLayers();
 
   state.pubs.forEach(pub => {
     const display = getDisplayStatus(pub);
-
-    const icon = L.divIcon({
-      className: '',
-      html: `<div class="pin ${display.pinClass}"></div>`,
-      iconSize: [14, 14],
-      iconAnchor: [7, 7]
+    const marker = L.circleMarker([pub.lat, pub.lng], {
+      radius: 9,
+      color: '#555',
+      weight: 1,
+      fillColor: display.pin,
+      fillOpacity: 0.95
     });
-
-    const marker = L.marker([pub.lat, pub.lng], { icon });
 
     marker.on('click', () => openDetail(pub.id, 'map'));
     marker.bindTooltip(pub.name, { direction: 'top', offset: [0, -6] });
-
-    state.markerLayer.addLayer(marker);
+    marker.addTo(state.markerLayer);
   });
 }
 
@@ -796,11 +861,15 @@ function updateUserLocationMarker() {
 }
 
 function clearUserLocationMarker() {
-  if (state.userMarker) { state.userMarker.remove(); state.userMarker = null; }
-  if (state.userAccuracyCircle) { state.userAccuracyCircle.remove(); state.userAccuracyCircle = null; }
+  if (state.userMarker) {
+    state.userMarker.remove();
+    state.userMarker = null;
+  }
+  if (state.userAccuracyCircle) {
+    state.userAccuracyCircle.remove();
+    state.userAccuracyCircle = null;
+  }
 }
-
-/* ---------- Utilities ---------- */
 
 function mapsHref(lat, lng, name) {
   const q = encodeURIComponent(name || `${lat},${lng}`);
@@ -813,10 +882,7 @@ function parseISODate(str) {
 }
 
 function formatDate(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function fmtTime(d) {
@@ -827,12 +893,10 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = deg2rad(lat2 - lat1);
   const dLon = deg2rad(lon2 - lon1);
-
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
     Math.sin(dLon / 2) ** 2;
-
   return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
@@ -842,20 +906,14 @@ function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 
 function escapeHtml(str = '') {
   return String(str).replace(/[&<>"']/g, m => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
   }[m]));
 }
-function escapeAttr(str = '') { return escapeHtml(str); }
 
-/* ---------- Titles (keeps your HTML unchanged) ---------- */
-
-function setRowTitles() {
-  try {
-    const nearTitle = els.rowNearMeWrap.querySelector('.rowTitle');
-    if (nearTitle) nearTitle.textContent = 'Sunniest near me';
-
-    const latestWrap = els.rowSunniest.closest('.rowWrap');
-    const latestTitle = latestWrap ? latestWrap.querySelector('.rowTitle') : null;
-    if (latestTitle) latestTitle.textContent = 'Latest sun today';
-  } catch {}
+function escapeAttr(str = '') {
+  return escapeHtml(str);
 }
