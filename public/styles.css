@@ -154,6 +154,14 @@ img{display:block}
   padding:0 2px 8px;
 }
 
+.rowHeaderActions{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+}
+
 .rowTitle{
   margin:0;
   font-size:16px;
@@ -168,8 +176,13 @@ img{display:block}
   display:flex;
   gap:12px;
   overflow-x:auto;
-  padding:2px 2px 10px;
+  padding:2px 2px 12px;
   scroll-snap-type:x proximity;
+  scroll-padding-inline:2px;
+  overscroll-behavior-x:contain;
+  -webkit-overflow-scrolling:touch;
+  scrollbar-width:none;
+  touch-action:pan-x pinch-zoom;
 }
 
 .hScroll::-webkit-scrollbar{
@@ -193,7 +206,9 @@ img{display:block}
 .cardSmall{
   min-width:248px;
   max-width:268px;
+  flex:0 0 auto;
   scroll-snap-align:start;
+  scroll-snap-stop:normal;
 }
 
 .cardButton{
@@ -215,6 +230,63 @@ img{display:block}
 .cardBody{
   padding:12px;
 }
+.cardBadges{
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+  margin:0 0 8px;
+}
+
+.miniBadge,
+.detailBadge{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  padding:5px 10px;
+  border-radius:999px;
+  border:1px solid var(--line);
+  background:#faf9f4;
+  color:#4a4a4a;
+  font-size:11px;
+  font-weight:800;
+}
+
+.rideLine{
+  margin-top:8px;
+  font-size:12px;
+  color:var(--muted);
+  font-weight:750;
+}
+
+.filterChip{
+  border:1px solid var(--line);
+  background:var(--panel);
+  color:var(--text);
+  padding:8px 12px;
+  border-radius:999px;
+  font-weight:800;
+  box-shadow:0 2px 8px rgba(0,0,0,.05);
+}
+
+.filterChip.isActive{
+  background:rgba(245,197,66,.22);
+  border-color:rgba(245,197,66,.5);
+}
+
+.detailBadges{
+  margin-top:10px;
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.detailTravel{
+  margin-top:10px;
+  font-size:13px;
+  color:var(--muted);
+  font-weight:750;
+}
+
 
 .cardTitle{
   margin:0;
